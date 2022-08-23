@@ -88,7 +88,7 @@ Client: {"seq":1,"opcode":"audience/count-group/increment","params":{"name":"Ear
 
 ---
 
-Errors:
+Errors (not all):
 Missing format query param: {"pc":0,"opcode":"error","result":{"code":1000,"msg":"missing required querystring param: format"}}
 Parse error: {"pc":0,"opcode":"error","result":{"code":1000,"msg":"parse error in ecast protocol: invalid character 's' looking for beginning of value"}}
 Invalid arguments: {"pc":0,"opcode":"error","result":{"code":1000,"msg":"invalid arguments: unexpected end of JSON input"}}
@@ -98,6 +98,7 @@ No "Sec-WebSocket-Protocol" header: {"pc":0,"opcode":"error","result":{"code":20
 Invalid "Sec-WebSocket-Protocol" header: {"pc":0,"opcode":"error","result":{"code":2000,"msg":"unexpected Sec-WebSocket-Protocol header value \"hahag\": ecast client error"}}
 Missing opcode: {"pc":0,"opcode":"error","result":{"code":2002,"msg":"missing opcode"}}
 Invalid opcode: {"pc":0,"opcode":"error","result":{"code":2002,"msg":"invalid opcode"}}
+Duplicate key: {"pc":0,"opcode":"error","result":{"code":2006,"msg":"the key \"avatars\" is already in use"}}
 Invalid client id: {"pc":0,"opcode":"error","result":{"code":2008,"msg":"there is no connected client having id 0"}}
 Invalid role value: {"pc":0,"opcode":"error","result":{"code":2014,"msg":"no such role: aaa: requested role does not exist"}}
 Twitch required: {"pc":0,"opcode":"error","result":{"code":2015,"msg":"twitch login required"}}
