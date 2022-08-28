@@ -142,12 +142,37 @@ function upgradeWs(request, socket, head){
 									wsPlayersServer.emit('connection', socket, request, req);
 								});
 							}
-						}else if(req.query.role == 'audience'){
-							socket.destroy(); // bc now server doesn't support audience
 						}else if(req.query.role == 'moderator'){
 							socket.destroy(); // bc now server doesn't support moderators
 						}else if(req.query.role == 'host'){
 							socket.destroy(); // bc now server doesn't support all games from tjpp 7 and newer
+						}else{
+							socket.destroy();
+						}
+					}
+				}else{
+					socket.destroy();
+				}
+			}else{
+				socket.destroy();
+			}
+		}
+	}else if(req.url.startsWith('/api/v2/audience/')){
+		var room = req.url.match(/[A-Z]/g);
+		if(room.length < 4){
+			socket.destroy();
+		}else{
+			room = room[0]+room[1]+room[2]+room[3];
+			if(req.url == '/api/v2/rooms/'+room+'/play'){
+				if(checkQuery(req.query)){
+					if(typeof rooms[room] === 'undefined'){
+						socket.destroy();
+					}else{
+						if(req.query.name.length > 12){
+							req.query.name = req.query.name.substring(0, 12);
+						}
+						if(req.query.role == 'audience'){
+							socket.destroy(); // bc now server doesn't support audience
 						}else{
 							socket.destroy();
 						}
