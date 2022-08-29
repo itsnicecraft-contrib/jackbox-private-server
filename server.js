@@ -135,7 +135,16 @@ function upgradeWs(request, socket, head){
 							req.query.name = req.query.name.substring(0, 12);
 						}
 						if(req.query.role == 'player'){
-							if(rooms[room].body.full || rooms[room].body.locked){
+							var reconnect = false;
+							Object.keys(rooms[room].clients).forEach((client) => {
+								client = rooms[room].clients[client];
+								if(client.userId == req.query['user-id']){
+									if(!client.connected){
+										reconnect = true;
+									}
+								}
+							});
+							if((rooms[room].body.full || rooms[room].body.locked) && !reconnect){
 								socket.destroy();
 							}else{
 								wsPlayersServer.handleUpgrade(request, socket, head, socket => {
@@ -163,7 +172,7 @@ function upgradeWs(request, socket, head){
 			socket.destroy();
 		}else{
 			room = room[0]+room[1]+room[2]+room[3];
-			if(req.url == '/api/v2/rooms/'+room+'/play'){
+			if(req.url == '/api/v2/audience/'+room+'/play'){
 				if(checkQuery(req.query)){
 					if(typeof rooms[room] === 'undefined'){
 						socket.destroy();
@@ -172,7 +181,9 @@ function upgradeWs(request, socket, head){
 							req.query.name = req.query.name.substring(0, 12);
 						}
 						if(req.query.role == 'audience'){
-							socket.destroy(); // bc now server doesn't support audience
+							wsAudienceServer.handleUpgrade(request, socket, head, socket => {
+								wsAudienceServer.emit('connection', socket, request, req);
+							});
 						}else{
 							socket.destroy();
 						}
@@ -191,7 +202,7 @@ function upgradeWs(request, socket, head){
 
 const wsOldHostsServer = new ws.Server({ noServer: true });
 const wsPlayersServer = new ws.Server({ noServer: true });
-//const wsAudienceServer = new ws.Server({ noServer: true });
+const wsAudienceServer = new ws.Server({ noServer: true });
 //const wsHostsServer = new ws.Server({ noServer: true });
 wsOldHostsServer.on('connection', (socket, request, req) => {
 	socket.id = randomId(1000000, 9999999);
@@ -274,8 +285,10 @@ wsOldHostsServer.on('connection', (socket, request, req) => {
 						if(data.args.module == 'audience'){
 							socket.send('5:::'+toJson({"name":"msg","args":[{"type":"Result","action":"GetSessionStatus","module":"audience","name":data.args.name,"success":true,"response":{"count":rooms[socket.room].audience.length}}]}))
 						}else if(data.args.module == 'vote'){
-							var choices = rooms[socket.room].entities[data.args.name].content.choices;
-							socket.send('5:::'+toJson({"name":"msg","args":[{"type":"Result","action":"GetSessionStatus","module":"vote","name":data.args.name,"success":true,"response":choices}]}));
+							if(typeof rooms[socket.room].entities[data.args.name] !== 'undefined'){
+								var choices = rooms[socket.room].entities[data.args.name].content.choices;
+								socket.send('5:::'+toJson({"name":"msg","args":[{"type":"Result","action":"GetSessionStatus","module":"vote","name":data.args.name,"success":true,"response":choices}]}));
+							}
 						}
 					}
 				}else if(data.args.action == 'SetCustomerBlob'){
@@ -314,9 +327,11 @@ wsOldHostsServer.on('connection', (socket, request, req) => {
 				}else if(data.args.action == 'StopSession'){
 					if(typeof data.args.module === 'string' && typeof data.args.name === 'string'){
 						if(data.args.module == 'vote'){
-							var choices = rooms[socket.room].entities[data.args.name].content.choices;
-							delete rooms[socket.room].entities[data.args.name];
-							socket.send('5:::'+toJson({"name":"msg","args":[{"type":"Result","action":"StopSession","module":"vote","name":data.args.name,"success":true,"response":choices}]}));
+							if(typeof rooms[socket.room].entities[data.args.name] !== 'undefined'){
+								var choices = rooms[socket.room].entities[data.args.name].content.choices;
+								delete rooms[socket.room].entities[data.args.name];
+								socket.send('5:::'+toJson({"name":"msg","args":[{"type":"Result","action":"StopSession","module":"vote","name":data.args.name,"success":true,"response":choices}]}));
+							}
 						}
 					}
 				}
@@ -465,6 +480,65 @@ wsPlayersServer.on('connection', (socket, request, req) => {
 	}
 });
 
+wsAudienceServer.on('connection', (socket, request, req) => {
+	socket.id = randomId(1000000, 9999999);
+	console.log(socket.id+" connected");
+	socket.on('error', error => {console.log(socket.id+" error: "+error)});
+	socket.on('close', () => {
+		console.log(socket.id+" disconnected");
+		if(typeof ws_ids[socket.id] === 'object'){
+			if(typeof rooms[socket.room] !== 'undefined'){
+				rooms[socket.room].audience.splice(rooms[socket.room].audience.indexOf(socket.id), 1);
+				rooms[socket.room].entities['audience'] = {"to":"all","opcode":"audience/pn-counter","content":{"key":"audience","count":rooms[socket.room].audience.length}};
+				delete ws_ids[socket.id];
+			}
+		}
+	});
+	socket.on('message', message => {
+		message = message.toString();
+		console.log(socket.id+": "+message);
+		if(!isJson(message) || !checkMessage(JSON.parse(message))){
+			socket.send(toJson({"pc":rooms[socket.room].pc++,"opcode":"error","result":{"code":1000,"msg":"parse error in ecast protocol"}}));
+		}else{
+			var data = JSON.parse(message);
+			if(data.opcode == 'audience/count-group/increment'){
+				if(typeof data.params.name === 'string' && typeof data.params.vote !== 'undefined' && typeof data.params.times === 'number'){
+					if(typeof rooms[socket.room].entities[data.params.name] !== 'undefined'){
+						if(typeof rooms[socket.room].entities[data.params.name].content.choices !== 'undefined' && typeof rooms[socket.room].entities[data.params.name].content.choices[data.params.vote] !== 'undefined'){
+							rooms[socket.room].entities[data.params.name].content.choices[data.params.vote]++;
+							socket.send(toJson({"pc":rooms[socket.room].pc++,"re":data.seq,"opcode":"ok","result":{}}));
+						}else{
+							socket.send(toJson({"pc":rooms[socket.room].pc++,"re":data.seq,"opcode":"error","result":{"code":2023,"msg":"permission denied"}}));
+						}
+					}else{
+						socket.send(toJson({"pc":rooms[socket.room].pc++,"re":data.seq,"opcode":"error","result":{"code":1000,"msg":"invalid arguments"}}));
+					}
+				}else{
+					socket.send(toJson({"pc":rooms[socket.room].pc++,"re":data.seq,"opcode":"error","result":{"code":1000,"msg":"invalid arguments"}}));
+				}
+			}else{
+				socket.send(toJson({"pc":rooms[socket.room].pc++,"re":data.seq,"opcode":"error","result":{"code":2002,"msg":"invalid opcode"}}));
+			}
+		}
+	});
+	var room = req.url.split('/')[4];
+	socket.room = room;
+	var profileId = socket.id;
+	ws_ids[socket.id] = {room: room, id: socket.id, profileId: profileId, ws: socket, userId: req.query['user-id']};
+	rooms[socket.room].audience.push(socket.id);
+	rooms[socket.room].entities['audience'] = {"to":"all","opcode":"audience/pn-counter","content":{"key":"audience","count":rooms[socket.room].audience.length}};
+	var entities = {};
+	Object.keys(rooms[socket.room].entities).forEach((entityName) => {
+		var entity = rooms[socket.room].entities[entityName];
+		if(entity.to == 'all' || entity.to == 'audience'){
+			entities[entityName] = [entity.opcode,entity.content,{"locked":false}];
+			entities[entityName][1].from = rooms[socket.room].host.id;
+			entities[entityName][1].version = 0;
+		}
+	});
+	socket.send(toJson({"pc":rooms[socket.room].pc++,"opcode":"client/welcome","result":{"id":profileId,"name":req.query.name,"secret":"","reconnect":false,"deviceId":"","entities":entities,"here":null,"profile":null}}));
+});
+
 app.use(express.json());
 
 app.use((req, res, next) => {
@@ -525,6 +599,9 @@ app.post("/api/v2/rooms", (req, res) => {
 		rooms[room].body.appId = appTags[body.appTag];
 		if(typeof body.audienceEnabled === 'boolean'){
 			rooms[room].audienceEnabled = body.audienceEnabled;
+			if(body.audienceEnabled){
+				rooms[room].entities['audience'] = {"to":"all","opcode":"audience/pn-counter","content":{"key":"audience","count":rooms[room].audience.length}};
+			}
 		}
 		if(typeof body.locale === 'string'){
 			rooms[room].locale = body.locale;
