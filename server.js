@@ -40,10 +40,18 @@ function isJson(data){
 const toJson = data => {return JSON.stringify(data)};
 
 function checkOldMessage(data){
-	if(typeof data.args !== 'object' || typeof data.name !== 'string' || typeof data.args.action !== 'string' || typeof data.args.appId !== 'string' || typeof appIds[data.args.appId] !== 'string'){
-		return false;
+	if(typeof data.args !== 'undefined' && typeof data.args[0] === 'undefined'){
+		if(typeof data.args !== 'object' || typeof data.name !== 'string' || typeof data.args.action !== 'string' || typeof data.args.appId !== 'string' || typeof appIds[data.args.appId] !== 'string'){
+			return false;
+		}else{
+			return true;
+		}
 	}else{
-		return true;
+		if(typeof data.args !== 'object' || typeof data.name !== 'string' || typeof data.args[0].action !== 'string' || typeof data.args[0].appId !== 'string' || typeof appIds[data.args[0].appId] !== 'string'){
+			return false;
+		}else{
+			return true;
+		}
 	}
 };
 
@@ -106,7 +114,28 @@ function checkQuery(query){
 			return true;
 		}
 	}
-}
+};
+
+function userInRoom(room, user, connected){
+	if(typeof rooms[room] === 'undefined'){
+		return false;
+	}else{
+		var user_in_room = false;
+		Object.keys(rooms[room].clients).forEach((client) => {
+			client = rooms[room].clients[client];
+			if(client.userId == user){
+				if(connected){
+					if(client.connected){
+						user_in_room = true;
+					}
+				}else{
+					user_in_room = true;
+				}
+			}
+		});
+		return user_in_room;
+	}
+};
 
 function upgradeWs(request, socket, head){
 	var req = parseUrl(request.url);
@@ -114,8 +143,8 @@ function upgradeWs(request, socket, head){
 	if(req.url.startsWith('/socket.io/1/websocket/')){
 		var token = req.url.split('/')[4];
 		if(req.url == '/socket.io/1/websocket/'+token){
-			wsOldHostsServer.handleUpgrade(request, socket, head, socket => {
-				wsOldHostsServer.emit('connection', socket, request, req);
+			wsOldServer.handleUpgrade(request, socket, head, socket => {
+				wsOldServer.emit('connection', socket, request, req);
 			});
 		}else{
 			socket.destroy();
@@ -128,7 +157,7 @@ function upgradeWs(request, socket, head){
 			room = room[0]+room[1]+room[2]+room[3];
 			if(req.url == '/api/v2/rooms/'+room+'/play'){
 				if(checkQuery(req.query)){
-					if(typeof rooms[room] === 'undefined'){
+					if(typeof rooms[room] === 'undefined' || !rooms[room].completed){
 						socket.destroy();
 					}else{
 						if(req.query.name.length > 12){
@@ -200,30 +229,57 @@ function upgradeWs(request, socket, head){
 	}
 };
 
-const wsOldHostsServer = new ws.Server({ noServer: true });
+const wsOldServer = new ws.Server({ noServer: true });
 const wsPlayersServer = new ws.Server({ noServer: true });
 const wsAudienceServer = new ws.Server({ noServer: true });
 //const wsHostsServer = new ws.Server({ noServer: true });
-wsOldHostsServer.on('connection', (socket, request, req) => {
+wsOldServer.on('connection', (socket, request, req) => {
 	socket.id = randomId(1000000, 9999999);
 	console.log(socket.id+" connected");
 	socket.on('error', error => {console.log(socket.id+" error: "+error)});
 	socket.on('close', () => {
 		console.log(socket.id+" disconnected");
-		Object.keys(rooms[socket.room].clients).forEach((client) => {
-			client = rooms[socket.room].clients[client];
-			if((client.role == 'player' || client.role == 'moderator') && client.connected){
-				client.ws.send(toJson({"pc":rooms[socket.room].pc++,"opcode":"client/disconnected","result":{"id":rooms[socket.room].host.id, "role":"host"}}));
-				client.ws.close();
-				client.ws.terminate();
+		if(typeof ws_ids[socket.id] === 'object'){
+			if(typeof rooms[socket.room] !== 'undefined'){
+				if(socket.isHost){
+					Object.keys(rooms[socket.room].clients).forEach((client) => {
+						client = rooms[socket.room].clients[client];
+						if((client.role == 'player' || client.role == 'moderator') && client.connected){
+							if(ws_ids[client.ws.id].isLegacy){
+								client.ws.send('5:::'+toJson({"name":"msg","args":[{"type":"Event","event":"RoomDestroyed","roomId":socket.room}]}));
+								client.ws.send('0::');
+							}else{
+								client.ws.send(toJson({"pc":rooms[socket.room].pc++,"opcode":"client/disconnected","result":{"id":rooms[socket.room].host.id, "role":"host"}}));
+							}
+							client.ws.close();
+							client.ws.terminate();
+						}
+					});
+					rooms[socket.room].audience.forEach((client) => {
+						if(ws_ids[client].isLegacy){
+							ws_ids[client].ws.send('5:::'+toJson({"name":"msg","args":[{"type":"Event","event":"RoomDestroyed","roomId":socket.room}]}));
+							ws_ids[client].ws.send('0::');
+						}else{
+							ws_ids[client].ws.send(toJson({"pc":rooms[socket.room].pc++,"opcode":"client/disconnected","result":{"id":rooms[socket.room].host.id, "role":"host"}}));
+						}
+						ws_ids[client].ws.close();
+						ws_ids[client].ws.terminate();
+					});
+					delete rooms[socket.room];
+				}else if(!socket.isHost && !socket.isAudience){
+					rooms[socket.room].clients[ws_ids[socket.id].profileId].connected = false;
+					if(rooms[socket.room].isLegacy){
+						rooms[socket.room].host.ws.send("5:::"+toJson({"name":"msg","args":[{"type":"Event","event":"CustomerLeftRoom","roomId":socket.room,"customerUserId":""}]}));
+					}else{
+						rooms[socket.room].host.ws.send(toJson({"pc":rooms[socket.room].pc++,"opcode":"client/disconnected","result":{"id":ws_ids[socket.id].profileId,"role":rooms[socket.room].clients[ws_ids[socket.id].profileId].role}}));
+					}
+				}else if(socket.isAudience){
+					rooms[socket.room].audience.splice(rooms[socket.room].audience.indexOf(socket.id), 1);
+					rooms[socket.room].entities['audience'] = {"to":"all","opcode":"audience/pn-counter","content":{"key":"audience","count":rooms[socket.room].audience.length}};
+					delete ws_ids[socket.id];
+				}
 			}
-		});
-		rooms[socket.room].audience.forEach((client) => {
-			ws_ids[client].ws.send(toJson({"pc":rooms[socket.room].pc++,"opcode":"client/disconnected","result":{"id":rooms[socket.room].host.id, "role":"host"}}));
-			ws_ids[client].ws.close();
-			ws_ids[client].ws.terminate();
-		});
-		delete rooms[socket.room];
+		}
 	});
 	socket.on('message', message => {
 		message = message.toString();
@@ -239,7 +295,10 @@ wsOldHostsServer.on('connection', (socket, request, req) => {
 			}else if(checkOldMessage(JSON.parse(message.split('5:::')[1]))){
 				var data = JSON.parse(message.split('5:::')[1]);
 				if(data.args.action == 'CreateRoom'){
-					if(typeof appIds[data.args.appId] !== 'undefined'){
+					if(!socket.isConnected && typeof appIds[data.args.appId] !== 'undefined' && typeof data.args.userId !== 'undefined'){
+						var room = generateRoom(true);
+						socket.room = room;
+						var profileId = Object.keys(rooms[room].clients).length+1;
 						var options = data.args.options;
 						var appId = data.args.appId;
 						if(typeof options.maxPlayers === 'number' && options.maxPlayers >= maxPlayers[appIds[appId]]){
@@ -260,10 +319,15 @@ wsOldHostsServer.on('connection', (socket, request, req) => {
 						rooms[socket.room].body.appTag = appIds[appId];
 						rooms[socket.room].body.appId = appId;
 						rooms[socket.room].completed = true;
+						socket.isConnected = true;
+						socket.isHost = true;
+						rooms[room].clients[profileId] = {ws: socket, role: 'host', name: req.query.name, userId: data.args.userId, id: profileId, connected: true};
+						ws_ids[socket.id] = {room: room, id: socket.id, profileId: profileId, ws: socket, userId: data.args.userId, isLegacy: true};
+						rooms[room].host = {ws: socket, id: profileId, userId: null};
 						socket.send('5:::'+toJson({"name":"msg","args":[{"type":"Result","action":"CreateRoom","success":true,"roomId":socket.room}]}));
 					}
 				}else if(data.args.action == 'StartSession'){
-					if(typeof data.args.module === 'string' && typeof data.args.name === 'string'){
+					if(socket.isConnected && socket.isHost && typeof data.args.module === 'string' && typeof data.args.name === 'string'){
 						if(data.args.module == 'audience'){
 							rooms[socket.room].body.audienceEnabled = true;
 							rooms[socket.room].entities['audience'] = {"to":"all","opcode":"audience/pn-counter","content":{"key":"audience","count":rooms[socket.room].audience.length}};
@@ -275,13 +339,15 @@ wsOldHostsServer.on('connection', (socket, request, req) => {
 							});
 							rooms[socket.room].entities[data.args.name] = {"to":"audience","opcode":"audience/count-group","content":{"key":data.args.name,"choices":choices}};
 							rooms[socket.room].audience.forEach((client) => {
-								ws_ids[client].ws.send(toJson({"pc":rooms[socket.room].pc++,"opcode":"audience/count-group","result":{"key": data.args.name, "choices": choices}}));
+								if(!ws_ids[client].isLegacy){
+									ws_ids[client].ws.send(toJson({"pc":rooms[socket.room].pc++,"opcode":"audience/count-group","result":{"key": data.args.name, "choices": choices}}));
+								}
 							});
 							socket.send('5:::'+toJson({"name":"msg","args":[{"type":"Result","action":"StartSession","module":"vote","name":data.args.name,"success":true,"response":{}}]}));
 						}
 					}
 				}else if(data.args.action == 'GetSessionStatus'){
-					if(typeof data.args.module === 'string' && typeof data.args.name === 'string'){
+					if(socket.isConnected && socket.isHost && typeof data.args.module === 'string' && typeof data.args.name === 'string'){
 						if(data.args.module == 'audience'){
 							socket.send('5:::'+toJson({"name":"msg","args":[{"type":"Result","action":"GetSessionStatus","module":"audience","name":data.args.name,"success":true,"response":{"count":rooms[socket.room].audience.length}}]}))
 						}else if(data.args.module == 'vote'){
@@ -292,7 +358,7 @@ wsOldHostsServer.on('connection', (socket, request, req) => {
 						}
 					}
 				}else if(data.args.action == 'SetCustomerBlob'){
-					if(typeof data.args.customerUserId === 'string' && typeof data.args.blob !== 'undefined'){
+					if(socket.isConnected && socket.isHost && typeof data.args.customerUserId === 'string' && typeof data.args.blob !== 'undefined'){
 						var playerId = null;
 						Object.keys(rooms[socket.room].clients).forEach((client) => {
 							client = rooms[socket.room].clients[client];
@@ -304,28 +370,42 @@ wsOldHostsServer.on('connection', (socket, request, req) => {
 							var objectName = "bc:customer:"+data.args.customerUserId;
 							rooms[socket.room].entities[objectName] = {"to":"player","playerId":playerId,"opcode":"object","content": {"key":objectName,"val":data.args.blob}};
 							if(rooms[socket.room].clients[playerId].connected){
-								rooms[socket.room].clients[playerId].ws.send(toJson({"pc":rooms[socket.room].pc++,"opcode":"object","result":{"key":objectName,"val":data.args.blob,"version":0,"from":rooms[socket.room].host.id}}));
+								if(ws_ids[rooms[socket.room].clients[playerId].ws.id].isLegacy){
+									rooms[socket.room].clients[playerId].ws.send('5:::'+toJson({"name":"msg","args":[{"type":"Event","event":"CustomerBlobChanged","roomId":socket.room,"blob":data.args.blob}]}));
+								}else{
+									rooms[socket.room].clients[playerId].ws.send(toJson({"pc":rooms[socket.room].pc++,"opcode":"object","result":{"key":objectName,"val":data.args.blob,"version":0,"from":rooms[socket.room].host.id}}));
+								}
 							}
 						}
 					}
 				}else if(data.args.action == 'SetRoomBlob'){
-					if(typeof data.args.blob !== 'undefined'){
+					if(socket.isConnected && socket.isHost && typeof data.args.blob !== 'undefined'){
 						rooms[socket.room].entities['bc:room'] = {"to":"all","opcode":"object","content": {"key":"bc:room","val":data.args.blob}};
 						Object.keys(rooms[socket.room].clients).forEach((client) => {
 							client = rooms[socket.room].clients[client];
 							if(client.connected){
-								client.ws.send(toJson({"pc":rooms[socket.room].pc++,"opcode":"object","result":{"key":"bc:room","val":data.args.blob,"version":0,"from":rooms[socket.room].host.id}}));
+								if(ws_ids[client.ws.id].isLegacy){
+									client.ws.send('5:::'+toJson({"name":"msg","args":[{"type":"Event","event":"RoomBlobChanged","roomId":socket.room,"blob":data.args.blob}]}));
+								}else{
+									client.ws.send(toJson({"pc":rooms[socket.room].pc++,"opcode":"object","result":{"key":"bc:room","val":data.args.blob,"version":0,"from":rooms[socket.room].host.id}}));
+								}
 							}
 						});
 						rooms[socket.room].audience.forEach((client) => {
-							ws_ids[client].ws.send(toJson({"pc":rooms[socket.room].pc++,"opcode":"object","result":{"key":"bc:room","val":data.args.blob,"version":0,"from":rooms[socket.room].host.id}}));
+							if(ws_ids[client].isLegacy){
+								ws_ids[client].ws.send('5:::'+toJson({"name":"msg","args":[{"type":"Event","event":"RoomBlobChanged","roomId":socket.room,"blob":data.args.blob}]}));
+							}else{
+								ws_ids[client].ws.send(toJson({"pc":rooms[socket.room].pc++,"opcode":"object","result":{"key":"bc:room","val":data.args.blob,"version":0,"from":rooms[socket.room].host.id}}));
+							}
 						});
 					}
 				}else if(data.args.action == 'LockRoom'){
-					rooms[socket.room].body.locked = true;
-					socket.send('5:::'+toJson({"name":"msg","args":[{"type":"Result","action":"LockRoom","success":true,"roomId":socket.room}]}));
+					if(socket.isConnected && socket.isHost){
+						rooms[socket.room].body.locked = true;
+						socket.send('5:::'+toJson({"name":"msg","args":[{"type":"Result","action":"LockRoom","success":true,"roomId":socket.room}]}));
+					}
 				}else if(data.args.action == 'StopSession'){
-					if(typeof data.args.module === 'string' && typeof data.args.name === 'string'){
+					if(socket.isConnected && socket.isHost && typeof data.args.module === 'string' && typeof data.args.name === 'string'){
 						if(data.args.module == 'vote'){
 							if(typeof rooms[socket.room].entities[data.args.name] !== 'undefined'){
 								var choices = rooms[socket.room].entities[data.args.name].content.choices;
@@ -334,19 +414,112 @@ wsOldHostsServer.on('connection', (socket, request, req) => {
 							}
 						}
 					}
+				}else if(typeof data.args[0] !== 'undefined'){
+					if(data.args[0].action == 'JoinRoom'){
+						if(!socket.isConnected && typeof data.args[0].roomId !== 'undefined' && typeof data.args[0].name !== 'undefined' && typeof data.args[0].joinType !== 'undefined' && typeof data.args[0].options !== 'undefined' && typeof data.args[0].userId !== 'undefined'){
+							if(data.args[0].joinType == 'player'){
+								if(typeof rooms[data.args[0].roomId] === 'undefined' || userInRoom(data.args[0].roomId, data.args[0].userId, true)){
+									socket.send('0::');
+									socket.terminate();
+								}else if((rooms[data.args[0].roomId].body.locked || rooms[data.args[0].roomId].body.full) && !userInRoom(data.args[0].roomId, data.args[0].userId, true)){
+									socket.send('0::');
+									socket.terminate();
+								}else{
+									var passwordCorrect = false;
+									if(rooms[data.args[0].roomId].body.passwordRequired){
+										if(typeof data.args[0].options.password !== 'undefined' && data.args[0].options.password == rooms[data.args[0].roomId].password){
+											passwordCorrect = true;
+										}
+									}else{
+										passwordCorrect = true;
+									}
+									if(!passwordCorrect){
+										socket.send('5:::'+toJson({"name":"msg","args":[{"type":"Result","action":"JoinRoom","success":false,"initial":false,"roomId":data.args[0].roomId,"joinType":"player","userId":data.args[0].userId,"error_code":2017,"error":"password required","options":{"roomcode":"","name":data.args[0].roomId,"email":"","phone":""}}]}));
+										socket.send('0::');
+										socket.terminate();
+									}else{
+										if(userInRoom(data.args[0].roomId, data.args[0].userId, false)){
+											var newSocketId = null;
+											socket.room = data.args[0].roomId;
+											Object.keys(rooms[socket.room].clients).forEach((client) => {
+												client = rooms[socket.room].clients[client];
+												if(client.userId == data.args[0].userId){
+													if(!client.connected){
+														newSocketId = client.ws.id;
+													}
+												}
+											});
+											console.log("Client id changed from "+socket.id+" to "+newSocketId);
+											socket.id = newSocketId
+											socket.isConnected = true;
+											var profileId = ws_ids[socket.id].profileId;
+											rooms[socket.room].clients[profileId].connected = true;
+											rooms[socket.room].clients[profileId].ws = socket;
+											rooms[socket.room].clients[profileId].isLegacy = false;
+											ws_ids[socket.id].ws = socket;
+										}else{
+											socket.room = data.args[0].roomId;
+											socket.isConnected = true;
+											var profileId = Object.keys(rooms[data.args[0].roomId].clients).length+1;
+											rooms[data.args[0].roomId].clients[profileId] = {ws: socket, role: 'player', name: data.args[0].name, userId: data.args[0].userId, id: profileId, connected: true};
+											ws_ids[socket.id] = {room: data.args[0].roomId, id: socket.id, profileId: profileId, ws: socket, userId: data.args[0].userId, isLegacy: true};
+										}
+										rooms[socket.room].host.ws.send('5:::'+toJson({"name":"msg","args":[{"type":"Event","event":"CustomerJoinedRoom","roomId":data.args[0].roomId,"customerUserId":data.args[0].userId,"customerName":data.args[0].name,"options":{"roomcode":data.args[0].options.roomcode||"","name":data.args[0].options.name||data.args[0].name,"email":data.args[0].options.email||"","phone":data.args[0].options.phone||""}}]}));
+										socket.send('5:::'+toJson({"name":"msg","args":[{"type":"Result","action":"JoinRoom","success":true,"initial":false,"roomId":data.args[0].roomId,"joinType":data.args[0].joinType,"userId":data.args[0].userId,"options":{"roomcode":"","name":data.args[0].options.name||data.args[0].name,"email":data.args[0].options.email||"","phone":data.args[0].options.phone||""},"userId":data.args[0].userId,"action":"JoinRoom"}]}));
+										if(typeof rooms[socket.room].entities['bc:room'] !== 'undefined'){
+											socket.send('5:::'+toJson({"name":"msg","args":[{"type":"Event","event":"RoomBlobChanged","roomId":socket.room,"blob":rooms[socket.room].entities['bc:room'].content.val}]}));
+										}else{
+											socket.send('5:::'+toJson({"name":"msg","args":[{"type":"Event","event":"RoomBlobChanged","roomId":socket.room,"blob":{}}]}));
+										}
+										if(typeof rooms[socket.room].entities['bc:customer:'+data.args[0].userId] !== 'undefined'){
+											socket.send('5:::'+toJson({"name":"msg","args":[{"type":"Event","event":"CustomerBlobChanged","roomId":socket.room,"blob":rooms[socket.room].entities['bc:customer:'+data.args[0].userId].content.val}]}));
+										}else{
+											socket.send('5:::'+toJson({"name":"msg","args":[{"type":"Event","event":"CustomerBlobChanged","roomId":socket.room,"blob":{}}]}));
+										}
+									}
+								}
+							}else if(data.args[0].joinType == 'audience'){
+								if(typeof rooms[data.args[0].roomId] === 'undefined' || !rooms[data.args[0].roomId].body.audienceEnabled){
+									socket.send('0::');
+									socket.terminate();
+								}else{
+									socket.room = data.args[0].roomId;
+									socket.isAudience = true;
+									socket.isConnected = true;
+									var profileId = socket.id;
+									ws_ids[socket.id] = {room: data.args[0].roomId, id: socket.id, profileId: profileId, ws: socket, userId: data.args[0].userId, isLegacy: true};
+									rooms[socket.room].audience.push(socket.id);
+									rooms[socket.room].entities['audience'] = {"to":"all","opcode":"audience/pn-counter","content":{"key":"audience","count":rooms[socket.room].audience.length}};
+									socket.send('5:::'+toJson({"name":"msg","args":[{"type":"Result","action":"JoinRoom","success":true,"initial":true,"roomId":socket.room,"joinType":"audience","userId":socket.id,"generatedName":data.args[0].name,"options":{"roomcode":"","name":data.args[0].options.name||data.args[0].name,"email":data.args[0].options.email||"","phone":data.args[0].options.phone||""}}]}));
+								}
+							}
+						}
+					}else if(data.args[0].action == 'SendMessageToRoomOwner'){
+						if(socket.isConnected && !socket.isHost && !socket.isAudience && typeof data.args[0].message !== 'undefined'){
+							if(rooms[socket.room].isLegacy){
+								rooms[socket.room].host.ws.send('5:::'+toJson({"name":"msg","args":[{"type":"Event","event":"CustomerMessage","roomId":socket.room,"userId":ws_ids[socket.id].userId,"message":data.args[0].message}]}));
+							}else{
+								rooms[socket.room].host.ws.send(toJson({"pc":rooms[socket.room].pc++,"opcode":"client/send","result":{"to":rooms[socket.room].host.id,"from":ws_ids[socket.id].profileId,"body":data.args[0].message,"userID":ws_ids[socket.id].userId}}));
+							}
+						}
+					}else if(data.args[0].action == 'SendSessionMessage'){
+						if(socket.isConnected && !socket.isHost && socket.isAudience && typeof data.args[0].name !== 'undefined' && typeof data.args[0].message !== 'undefined'){
+							if(typeof rooms[socket.room].entities[data.args[0].name] !== 'undefined' && data.args[0].message.vote !== 'undefined' && typeof rooms[socket.room].entities[data.args[0].name].content.choices !== 'undefined' && typeof rooms[socket.room].entities[data.args[0].name].content.choices[data.args[0].message.vote] !== 'undefined'){
+								rooms[socket.room].entities[data.args[0].name].content.choices[data.args[0].message.vote]++;
+								socket.send('5:::'+toJson({"name":"msg","args":[{"action":"SendSessionMessage","module":"vote","name":"","response":{},"success":true,"type":"Result"}]}));
+							}
+						}
+					}
 				}
 			}
 		}
 	});
-	var room = generateRoom(true);
-	socket.room = room;
-	var profileId = Object.keys(rooms[room].clients).length+1;
-	rooms[room].clients[profileId] = {ws: socket, role: 'host', name: req.query.name, userId: req.query['user-id'], id: profileId, connected: true};
-	ws_ids[socket.id] = {room: room, id: socket.id, profileId: profileId, ws: socket, userId: req.query['user-id']};
-	rooms[room].host = {ws: socket, id: profileId, userId: req.query['user-id']};
+	socket.isConnected = false;
+	socket.isHost = false;
+	socket.isAudience = false;
 	socket.send('1::');
 	var ping = setInterval(() => {
-		socket.send('2::');
+		socket.send('2:::');
 	}, 10000);
 });
 
@@ -436,13 +609,14 @@ wsPlayersServer.on('connection', (socket, request, req) => {
 			if(!reconnect){
 				var profileId = Object.keys(rooms[room].clients).length+1;
 				rooms[room].clients[profileId] = {ws: socket, role: req.query.role, name: req.query.name, userId: req.query['user-id'], id: profileId, connected: true};
-				ws_ids[socket.id] = {room: room, id: socket.id, profileId: profileId, ws: socket, userId: req.query['user-id']};
+				ws_ids[socket.id] = {room: room, id: socket.id, profileId: profileId, ws: socket, userId: req.query['user-id'], isLegacy: false};
 			}else{
 				console.log("Client id changed from "+socket.id+" to "+newSocketId);
 				socket.id = newSocketId
 				var profileId = ws_ids[socket.id].profileId;
 				rooms[socket.room].clients[profileId].connected = true;
 				rooms[socket.room].clients[profileId].ws = socket;
+				rooms[socket.room].clients[profileId].isLegacy = false;
 				ws_ids[socket.id].ws = socket;
 			}
 			var entities = {};
@@ -524,7 +698,7 @@ wsAudienceServer.on('connection', (socket, request, req) => {
 	var room = req.url.split('/')[4];
 	socket.room = room;
 	var profileId = socket.id;
-	ws_ids[socket.id] = {room: room, id: socket.id, profileId: profileId, ws: socket, userId: req.query['user-id']};
+	ws_ids[socket.id] = {room: room, id: socket.id, profileId: profileId, ws: socket, userId: req.query['user-id'], isLegacy: false};
 	rooms[socket.room].audience.push(socket.id);
 	rooms[socket.room].entities['audience'] = {"to":"all","opcode":"audience/pn-counter","content":{"key":"audience","count":rooms[socket.room].audience.length}};
 	var entities = {};
@@ -543,12 +717,32 @@ app.use(express.json());
 
 app.use((req, res, next) => {
 	console.log(req.method, req.originalUrl);
-	res.header('Access-Control-Allow-Origin', '*');
+	res.header('Access-Control-Allow-Origin', req.headers.origin||"*");
+	res.header('Access-Control-Allow-Credentials', 'true');
 	return next();
 });
 
 app.get("/room", (req, res) => {
 	res.send({"create":true,"server":serverUrl});
+});
+
+app.get("/room/:roomId", (req, res) => {
+	if(typeof rooms[req.params.roomId] === 'undefined'){
+		res.status(404).send({"success":false,"error":"Invalid Room Code"});
+	}else{
+		if(rooms[req.params.roomId].body.full || rooms[req.params.roomId].body.locked){
+			if(rooms[req.params.roomId].body.audienceEnabled){
+				var joinAs = 'audience';
+			}else if(typeof req.query.userId !== 'undefined' && userInRoom(req.params.roomId, req.query.userId, false)){
+				var joinAs = 'player';
+			}else{
+				var joinAs = 'full';
+			}
+		}else{
+			var joinAs = 'player';
+		};
+		res.send({"roomid":req.params.roomId,"server":serverUrl,"apptag":rooms[req.params.roomId].body.appTag,"appid":rooms[req.params.roomId].body.appId,"numAudience":rooms[req.params.roomId].audience.length,"audienceEnabled":rooms[req.params.roomId].body.audienceEnabled,"joinAs":joinAs,"requiresPassword":rooms[req.params.roomId].body.passwordRequired});
+	}
 });
 
 app.get("/socket.io/1", (req, res) => {
