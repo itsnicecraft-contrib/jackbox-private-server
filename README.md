@@ -21,7 +21,7 @@ In config.json you need to change:
 * allowedOrigins by list of your urls for Access-Control-Allow-Origin header
 * ssl cert and key by path to your ssl cert and key (with ./ at the start of file path)
 
-If you want, you can change game configs, but I don't recommend to do this
+If you want, you can change game configs, but I don't recommend to do that
 
 Next you need to install modules:
 `npm i xmlhttprequest request ws express aws-sdk`
