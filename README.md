@@ -1,4 +1,4 @@
-# jackbox-private-server
+# Jackbox private server
 An attempt to make a private server for all jackbox games<br />
 If you found a bug or want to help me, create an issue or write me on Discord: @klucva
 ## Unfinished functions
