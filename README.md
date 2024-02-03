@@ -24,7 +24,7 @@ In config.json you need to change:
 If you want, you can change game configs, but I don't recommend to do that
 
 Next you need to install modules:
-`npm i xmlhttprequest request ws express aws-sdk`
+`npm i`
 
 Then run server by command `node server.js` and enjoy!
 ## I need a help!
