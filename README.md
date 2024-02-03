@@ -8,6 +8,8 @@ If you found a bug or want to help me, create an issue or write me on Discord: @
 * Artifacts and galleries
 
 In the current state of the project you can play all games except those listed above
+## How to connect to a server?
+Open game options in steam and set launch arguments to `-jbg.config serverUrl=localhost` (replace localhost by your server address)
 ## How to connect to the game?
 To connect to the game you need your clone of jackbox.tv and in all scripts where ecast.jackboxgames.com appears, replace it with your server address
 
